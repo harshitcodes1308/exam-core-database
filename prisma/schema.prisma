@@ -15,6 +15,7 @@ model Board {
   createdAt DateTime @default(now()) @map("created_at")
 
   classes   Class[]
+  papers    Paper[]
 
   @@map("boards")
 }
@@ -28,6 +29,7 @@ model Class {
 
   board     Board    @relation(fields: [boardId], references: [id], onDelete: Cascade)
   subjects  Subject[]
+  papers    Paper[]
 
   @@index([boardId])
   @@map("classes")
@@ -43,9 +45,32 @@ model Subject {
 
   class     Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
   chapters  Chapter[]
+  papers    Paper[]
 
   @@index([classId])
   @@map("subjects")
+}
+
+model Paper {
+  id         String   @id @default(uuid())
+  boardId    String   @map("board_id")
+  classId    String   @map("class_id")
+  subjectId  String   @map("subject_id")
+  type       String   // Board Exam / Sample Paper / SQP / Practice Paper
+  code       String?
+  year       Int?
+  setNumber  String?  @map("set_number")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  board      Board    @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  class      Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subject    Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  questions  Question[]
+
+  @@index([boardId])
+  @@index([classId])
+  @@index([subjectId])
+  @@map("papers")
 }
 
 model Chapter {
@@ -71,7 +96,92 @@ model Topic {
   createdAt  DateTime @default(now()) @map("created_at")
 
   chapter    Chapter  @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  questions  Question[]
+  contents   Content[]
 
   @@index([chapterId, orderIndex])
   @@map("topics")
+}
+
+model Question {
+  id               String   @id @default(uuid())
+  paperId          String?  @map("paper_id")
+  chapterId        String?  @map("chapter_id")
+  topicId          String?  @map("topic_id")
+  
+  questionNumber   String?  @map("question_number")
+  section          String?
+  questionText     String   @map("question_text") // Rich text
+  questionType     String   @default("MCQ") @map("question_type") // MCQ, Subjective, Case Study, etc.
+  difficulty       String?  @default("MEDIUM")
+  marks            Int?
+  correctAnswer    String?  @map("correct_answer")
+  officialSolution String?  @map("official_solution")
+  hint             String?
+  diagramUrl       String?  @map("diagram_url")
+  language         String   @default("English")
+  source           String   @default("CBSE Official")
+
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  paper            Paper?   @relation(fields: [paperId], references: [id], onDelete: SetNull)
+  topic            Topic?   @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  
+  options          QuestionOption[]
+  tags             QuestionTag[]
+
+  @@index([paperId])
+  @@index([topicId])
+  @@map("questions")
+}
+
+model QuestionOption {
+  id         String   @id @default(uuid())
+  questionId String   @map("question_id")
+  content    String   // Rich text
+  isCorrect  Boolean  @default(false) @map("is_correct")
+  orderIndex Int      @default(0) @map("order_index")
+
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+  @@map("question_options")
+}
+
+model Tag {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+
+  questions QuestionTag[]
+
+  @@map("tags")
+}
+
+model QuestionTag {
+  questionId String @map("question_id")
+  tagId      String @map("tag_id")
+
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  tag        Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([questionId, tagId])
+  @@map("question_tags")
+}
+
+model Content {
+  id          String   @id @default(uuid())
+  topicId     String   @map("topic_id")
+  title       String
+  body        String   // Markdown / Rich Text
+  contentType String   @default("NOTE") // NOTE, FORMULA, VIDEO_LINK
+  orderIndex  Int      @default(0) @map("order_index")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  topic       Topic    @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@index([topicId])
+  @@map("contents")
 }
