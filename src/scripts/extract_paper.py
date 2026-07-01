@@ -5,7 +5,16 @@ import re
 
 def is_hindi(text):
     # Check if text contains Devanagari characters
-    return bool(re.search(r'[\u0900-\u097F]', text))
+    if bool(re.search(r'[\u0900-\u097F]', text)):
+        return True
+    
+    # Check for poor decoding of Hindi: high punctuation/numbers vs English letters
+    letters = len(re.findall(r'[a-zA-Z]', text))
+    if len(text) > 20 and (letters / len(text)) < 0.15:
+        # Fewer than 15% english letters in a long block -> probably garbage/Hindi
+        return True
+        
+    return False
 
 def extract_questions(pdf_path):
     doc = fitz.open(pdf_path)

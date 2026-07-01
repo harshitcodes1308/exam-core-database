@@ -25,6 +25,7 @@ export default function RootLayout({
           </div>
           <nav className="text-sm font-medium text-gray-500 flex gap-4">
             <a href="/" className="hover:text-blue-600 transition-colors">Taxonomy</a>
+            <a href="/papers" className="hover:text-blue-600 transition-colors">Papers</a>
             <a href="/ingest" className="hover:text-blue-600 transition-colors">Ingestion Pipeline</a>
           </nav>
         </header>

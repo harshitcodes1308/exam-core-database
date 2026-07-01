@@ -51,7 +51,7 @@ export async function runIngestion(formData: FormData) {
   const pythonExecutable = join(process.cwd(), "src/scripts/venv/bin/python3");
   
   try {
-    const { stdout, stderr } = await execAsync(`${pythonExecutable} ${scriptPath} ${qpPath} ${msPath}`);
+    const { stdout, stderr } = await execAsync(`${pythonExecutable} ${scriptPath} ${qpPath} ${msPath}`, { maxBuffer: 1024 * 1024 * 50 });
     
     const parsedData = JSON.parse(stdout);
     if (parsedData.error) {
@@ -104,5 +104,5 @@ export async function runIngestion(formData: FormData) {
   }
 
   revalidatePath("/");
-  redirect("/");
+  redirect(`/papers/${paper.id}`);
 }
