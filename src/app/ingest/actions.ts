@@ -82,16 +82,24 @@ export async function runIngestion(formData: FormData) {
         if (finalDiagramUrl && finalDiagramUrl.startsWith("public")) {
           try {
             const { readFile, unlink } = require("fs").promises;
+            const { basename } = require("path");
+            const { put } = require("@vercel/blob");
+            
             const fullPath = join(process.cwd(), finalDiagramUrl);
             const imageBuffer = await readFile(fullPath);
-            const base64 = imageBuffer.toString("base64");
-            const ext = finalDiagramUrl.split('.').pop() || 'png';
-            finalDiagramUrl = `data:image/${ext};base64,${base64}`;
+            const filename = basename(finalDiagramUrl);
+            
+            const blob = await put(`diagrams/${filename}`, imageBuffer, {
+              access: 'public',
+              token: process.env.BLOB_READ_WRITE_TOKEN
+            });
+
+            finalDiagramUrl = blob.url;
             
             // Cleanup the file
             await unlink(fullPath).catch(() => {});
           } catch (err) {
-            console.error("Failed to process diagram image:", err);
+            console.error("Failed to upload diagram to Vercel Blob:", err);
             finalDiagramUrl = null;
           }
         }
