@@ -58,10 +58,14 @@ def extract(qp_path, ms_path):
     If a question contains any visual diagram, grid, figure, graph, or complex drawing that is NOT just text, you MUST completely IGNORE and SKIP that question. Do not include it in your output JSON. Only extract questions that are purely text-based.
 
     For each purely text-based question on this page:
-    1. Extract the `questionNumber` and `questionText`. Do not include the number in the text.
+    1. Extract the `questionNumber` and `questionText`. 
+       - Do not include the number in the text.
+       - For Assertion-Reason questions, the `questionText` MUST contain both the Assertion (A) statement and Reason (R) statement. DO NOT put the options (e.g., "Both A and R are true...") in the question text.
     2. Identify the `questionType` (MCQ or Subjective).
     3. If MCQ, extract the `options` and find the correct one from the Marking Scheme.
     4. Find its corresponding `officialSolution` from the Marking Scheme text.
+       - CRITICAL: The Marking Scheme often contains numbers like "1", "½", "2" which represent marks awarded. DO NOT extract these numbers as the official solution!
+       - The `officialSolution` MUST be the actual textual explanation, steps, or answer string provided in the marking scheme. If the marking scheme only says "1" and gives no explanation, set `officialSolution` to the correct answer string.
     """
 
     import concurrent.futures
@@ -78,7 +82,7 @@ def extract(qp_path, ms_path):
         page_questions = []
         try:
             completion = client.beta.chat.completions.parse(
-                model="gpt-4o-mini",
+                model="gpt-4o",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": [
