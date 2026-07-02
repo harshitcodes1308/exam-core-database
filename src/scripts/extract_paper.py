@@ -76,7 +76,9 @@ def extract(qp_path, ms_path):
        - Ensure the bounding box has a slight margin so the edges of the diagram are not cut off.
     """
 
-    for page_num in range(qp_doc.page_count):
+    import concurrent.futures
+
+    def process_page(page_num):
         print(f"Processing page {page_num + 1}/{qp_doc.page_count}...", file=sys.stderr)
         page = qp_doc.load_page(page_num)
         
@@ -85,9 +87,10 @@ def extract(qp_path, ms_path):
         img_bytes = pix.tobytes("png")
         b64 = base64.b64encode(img_bytes).decode('utf-8')
         
+        page_questions = []
         try:
             completion = client.beta.chat.completions.parse(
-                model="gpt-4o",
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": [
@@ -140,11 +143,23 @@ def extract(qp_path, ms_path):
                 del q_dict['diagram_ymax']
                 del q_dict['diagram_xmax']
                 
-                all_questions.append(q_dict)
+                page_questions.append(q_dict)
                 
         except Exception as e:
             print(f"Failed on page {page_num + 1}: {str(e)}", file=sys.stderr)
-            continue
+            
+        return page_num, page_questions
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(process_page, p) for p in range(qp_doc.page_count)]
+        results = []
+        for future in concurrent.futures.as_completed(futures):
+            results.append(future.result())
+            
+    # Sort results by page_num to keep questions in order
+    results.sort(key=lambda x: x[0])
+    for _, page_questions in results:
+        all_questions.extend(page_questions)
 
     print(f"Extracted {len(all_questions)} questions. {sum(1 for q in all_questions if q.get('diagramUrl'))} have diagrams.", file=sys.stderr)
     print(json.dumps(all_questions, indent=2))
