@@ -63,13 +63,19 @@ export default async function PaperPage(props: { params: Promise<{ id: string }>
                   </span>
                 </div>
                 
+                {q.diagramUrl && (
+                  <div className="mb-4">
+                    <img src={q.diagramUrl} alt={`Diagram for Q.${q.questionNumber}`} className="max-w-full h-auto rounded border" />
+                  </div>
+                )}
+                
                 <p className="whitespace-pre-wrap text-gray-900 font-medium mb-4">{q.questionText}</p>
                 
                 {q.options && q.options.length > 0 && (
                   <ul className="space-y-2 mb-4">
                     {q.options.map(opt => (
-                      <li key={opt.id} className={`p-2 rounded border ${opt.isCorrect ? 'bg-green-50 border-green-200 font-bold text-green-800' : 'bg-gray-50 border-gray-100 text-gray-600'}`}>
-                        {opt.content} {opt.isCorrect && '✓'}
+                      <li key={opt.id} className="p-2 rounded border bg-gray-50 border-gray-100 text-gray-600">
+                        {opt.content}
                       </li>
                     ))}
                   </ul>
@@ -82,7 +88,7 @@ export default async function PaperPage(props: { params: Promise<{ id: string }>
                   </div>
                 )}
                 
-                {q.correctAnswer && !q.officialSolution && (
+                {q.correctAnswer && (
                   <div className="bg-green-50 border border-green-200 p-3 rounded mt-4">
                     <p className="text-sm font-bold text-green-800 mb-1">Correct Answer:</p>
                     <p className="text-sm text-green-900 whitespace-pre-wrap">{q.correctAnswer}</p>

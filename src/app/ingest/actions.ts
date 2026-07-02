@@ -51,7 +51,13 @@ export async function runIngestion(formData: FormData) {
   const pythonExecutable = join(process.cwd(), "src/scripts/venv/bin/python3");
   
   try {
-    const { stdout, stderr } = await execAsync(`${pythonExecutable} ${scriptPath} ${qpPath} ${msPath}`, { maxBuffer: 1024 * 1024 * 50 });
+    const { stdout, stderr } = await execAsync(`${pythonExecutable} ${scriptPath} ${qpPath} ${msPath}`, { 
+      maxBuffer: 1024 * 1024 * 50,
+      env: {
+        ...process.env,
+        OPENAI_API_KEY: process.env.OPENAI_API_KEY
+      }
+    });
     
     const parsedData = JSON.parse(stdout);
     if (parsedData.error) {
@@ -60,7 +66,8 @@ export async function runIngestion(formData: FormData) {
 
     // Insert into DB
     let inserted = 0;
-    for (const item of parsedData) {
+    const questionsList = parsedData.questions || parsedData;
+    for (const item of questionsList) {
       // Duplicate check
       const exists = await prisma.question.findFirst({
         where: {
@@ -70,6 +77,25 @@ export async function runIngestion(formData: FormData) {
       });
 
       if (!exists) {
+        let finalDiagramUrl = item.diagramUrl || null;
+
+        if (finalDiagramUrl && finalDiagramUrl.startsWith("public")) {
+          try {
+            const { readFile, unlink } = require("fs").promises;
+            const fullPath = join(process.cwd(), finalDiagramUrl);
+            const imageBuffer = await readFile(fullPath);
+            const base64 = imageBuffer.toString("base64");
+            const ext = finalDiagramUrl.split('.').pop() || 'png';
+            finalDiagramUrl = `data:image/${ext};base64,${base64}`;
+            
+            // Cleanup the file
+            await unlink(fullPath).catch(() => {});
+          } catch (err) {
+            console.error("Failed to process diagram image:", err);
+            finalDiagramUrl = null;
+          }
+        }
+
         const question = await prisma.question.create({
           data: {
             paperId: paper.id,
@@ -78,6 +104,7 @@ export async function runIngestion(formData: FormData) {
             questionType: item.questionType,
             correctAnswer: item.correctAnswer || null,
             officialSolution: item.officialSolution || null,
+            diagramUrl: finalDiagramUrl,
           }
         });
 
