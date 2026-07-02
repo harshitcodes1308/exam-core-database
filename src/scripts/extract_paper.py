@@ -2,86 +2,159 @@ import sys
 import json
 import os
 import pymupdf4llm
-from pydantic import BaseModel, Field
-from typing import List, Optional
+import fitz
+import base64
 from openai import OpenAI
+from pydantic import BaseModel, Field
+from PIL import Image
+import io
 
 class Option(BaseModel):
-    content: str = Field(description="The text content of the MCQ option. Do not include the (A), (B) prefix.")
-    isCorrect: bool = Field(description="True if this is the correct option according to the marking scheme, otherwise False.")
+    content: str
+    isCorrect: bool
 
 class Question(BaseModel):
-    questionNumber: str = Field(description="The question number (e.g. '1', '2a', '3(i)').")
-    questionText: str = Field(description="The full text of the question, preserving newlines where appropriate. Do not include general instructions.")
-    questionType: str = Field(description="Must be exactly 'MCQ' or 'Subjective'.")
-    options: List[Option] = Field(description="List of options if it's an MCQ, otherwise an empty array.", default_factory=list)
-    correctAnswer: Optional[str] = Field(description="If MCQ, the short correct option letter (e.g. 'A', 'B', 'C', 'D'). Null if Subjective.", default=None)
-    officialSolution: Optional[str] = Field(description="The exact full explanation/solution from the marking scheme. This MUST be populated for ALL questions (both MCQs and Subjective).", default=None)
-    diagramUrl: Optional[str] = Field(description="If the question contains an image/diagram in the Markdown (e.g. ![](path/to/image.png) or ![image](...)), extract ONLY the path (e.g. 'path/to/image.png') and put it here. Null if no image.", default=None)
+    questionNumber: str
+    questionText: str
+    questionType: str = Field(description="'MCQ' or 'Subjective'")
+    options: list[Option]
+    correctAnswer: str | None
+    officialSolution: str | None
+    hasDiagram: bool
+    diagram_ymin: int | None = Field(description="0-100 percentage of the image height")
+    diagram_xmin: int | None = Field(description="0-100 percentage of the image width")
+    diagram_ymax: int | None = Field(description="0-100 percentage of the image height")
+    diagram_xmax: int | None = Field(description="0-100 percentage of the image width")
 
-class ExamPaper(BaseModel):
-    questions: List[Question] = Field(description="List of all extracted questions.")
+class PageExtraction(BaseModel):
+    questions: list[Question]
 
-def main():
-    if len(sys.argv) < 3:
-        print(json.dumps({"error": "Missing PDF paths"}))
-        sys.exit(1)
-        
-    qp_path = sys.argv[1]
-    ms_path = sys.argv[2]
-    api_key = os.environ.get("OPENAI_API_KEY")
-    
-    if not api_key:
+def extract(qp_path, ms_path):
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    if not client.api_key:
         print(json.dumps({"error": "OPENAI_API_KEY environment variable is not set."}))
         sys.exit(1)
 
+    print("Extracting Marking Scheme...", file=sys.stderr)
     try:
-        # Create diagrams directory
-        diagrams_dir = os.path.join(os.getcwd(), "public", "uploads", "diagrams")
-        os.makedirs(diagrams_dir, exist_ok=True)
-
-        # Convert QP to markdown and extract images
-        qp_md = pymupdf4llm.to_markdown(qp_path, write_images=True, image_path="public/uploads/diagrams")
-        
-        # Convert MS to markdown (no need to extract images usually, but we can do it just in case)
         ms_md = pymupdf4llm.to_markdown(ms_path)
-
-        client = OpenAI(api_key=api_key)
-
-        prompt = f"""
-You are an expert exam paper digitizer. Your task is to extract all questions and their official solutions from the provided Question Paper (QP) and Marking Scheme (MS) Markdown.
-
-RULES:
-1. Ignore general instructions, title pages, and any Hindi translations. Extract ONLY the English version of the questions.
-2. For MCQs, populate the `options` array, mark exactly one option as `isCorrect: true`, AND put the correct option letter (A, B, C, D) in `correctAnswer`.
-3. For Subjective questions, set `questionType` to "Subjective" and leave `options` empty.
-4. The `officialSolution` field MUST be populated for EVERY question. Copy the entire explanation/solution for that specific question from the Marking Scheme Markdown. 
-5. The Markdown text contains images like `![](public/uploads/diagrams/img.png)`. If a question has an associated diagram, extract the file path and put it in `diagramUrl`.
-6. Ensure the `questionNumber` matches exactly between the QP and MS.
-7. If a question has sub-parts (e.g. 1a, 1b), treat them as separate questions with question numbers "1(a)" and "1(b)".
-
-=== QUESTION PAPER MARKDOWN ===
-{qp_md}
-
-=== MARKING SCHEME MARKDOWN ===
-{ms_md}
-"""
-
-        completion = client.beta.chat.completions.parse(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a precise data extraction tool."},
-                {"role": "user", "content": prompt}
-            ],
-            response_format=ExamPaper,
-        )
-
-        exam_paper = completion.choices[0].message.parsed
-        print(exam_paper.model_dump_json(exclude_none=False))
-        
     except Exception as e:
-        print(json.dumps({"error": str(e)}))
+        print(json.dumps({"error": f"Failed to read MS PDF: {str(e)}"}), file=sys.stderr)
         sys.exit(1)
 
+    print("Extracting Question Paper...", file=sys.stderr)
+    try:
+        qp_doc = fitz.open(qp_path)
+    except Exception as e:
+        print(json.dumps({"error": f"Failed to read QP PDF: {str(e)}"}), file=sys.stderr)
+        sys.exit(1)
+
+    all_questions = []
+
+    # Get a unique prefix for saving images
+    base_name = os.path.basename(qp_path).split('.')[0]
+    out_dir = os.path.join(os.getcwd(), "public", "uploads", "diagrams")
+    os.makedirs(out_dir, exist_ok=True)
+
+    system_prompt = f"""
+    You are an expert exam digitizer. 
+    You will be given ONE PAGE of a Question Paper (as an image) and the ENTIRE Marking Scheme (as text).
+    Extract all questions that appear on this page image. If a question spans across multiple pages, only extract the part visible.
+    Ignore any Hindi translations. ONLY extract English text.
+
+    For each question on this page:
+    1. Extract the `questionNumber` and `questionText`. Do not include the number in the text.
+    2. Identify the `questionType` (MCQ or Subjective).
+    3. If MCQ, extract the `options` and find the correct one from the Marking Scheme.
+    4. Find its corresponding `officialSolution` from the Marking Scheme text.
+    5. CRITICAL VISUAL CHECK: Look closely at the question in the image. Does it have a visual diagram, grid, figure, graph, or complex drawing that is NOT just text?
+       - If YES: set `hasDiagram=true`.
+       - Provide the precise bounding box for the diagram in integer percentages (0-100) from top-left.
+       - The bounding box MUST perfectly enclose the ENTIRE diagram, including all sub-parts, tables, and labels. Do NOT include the question text in the box.
+       - CRITICAL: DO NOT select QR codes, page numbers, watermarks, or generic page headers. Only capture question-specific diagrams. 
+       - If the object is a QR code, barcode, or page number, set `hasDiagram=false`!
+       - Ensure the bounding box has a slight margin so the edges of the diagram are not cut off.
+    """
+
+    for page_num in range(qp_doc.page_count):
+        print(f"Processing page {page_num + 1}/{qp_doc.page_count}...", file=sys.stderr)
+        page = qp_doc.load_page(page_num)
+        
+        # High resolution for better cropping
+        pix = page.get_pixmap(dpi=300)
+        img_bytes = pix.tobytes("png")
+        b64 = base64.b64encode(img_bytes).decode('utf-8')
+        
+        try:
+            completion = client.beta.chat.completions.parse(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": f"Here is the Marking Scheme text:\n\n{ms_md}\n\nNow, extract the questions from the attached Question Paper page image."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+                    ]}
+                ],
+                response_format=PageExtraction,
+                max_completion_tokens=4096,
+                temperature=0.0
+            )
+            
+            page_data = completion.choices[0].message.parsed
+            
+            # Open image in PIL for cropping
+            pil_img = Image.open(io.BytesIO(img_bytes))
+            width, height = pil_img.size
+            
+            for q in page_data.questions:
+                q_dict = q.model_dump()
+                q_dict['diagramUrl'] = None
+                
+                if q.hasDiagram and all(v is not None for v in [q.diagram_ymin, q.diagram_xmin, q.diagram_ymax, q.diagram_xmax]):
+                    # Calculate pixel coordinates
+                    left = int((q.diagram_xmin / 100) * width)
+                    upper = int((q.diagram_ymin / 100) * height)
+                    right = int((q.diagram_xmax / 100) * width)
+                    lower = int((q.diagram_ymax / 100) * height)
+                    
+                    # Add 2% padding
+                    pad_x = int(width * 0.02)
+                    pad_y = int(height * 0.02)
+                    left = max(0, left - pad_x)
+                    upper = max(0, upper - pad_y)
+                    right = min(width, right + pad_x)
+                    lower = min(height, lower + pad_y)
+                    
+                    # Validate crop area
+                    if right > left and lower > upper:
+                        cropped = pil_img.crop((left, upper, right, lower))
+                        img_filename = f"{base_name}_{q.questionNumber}.png"
+                        img_path = os.path.join(out_dir, img_filename)
+                        cropped.save(img_path)
+                        q_dict['diagramUrl'] = f"public/uploads/diagrams/{img_filename}"
+                
+                # Cleanup internal fields
+                del q_dict['hasDiagram']
+                del q_dict['diagram_ymin']
+                del q_dict['diagram_xmin']
+                del q_dict['diagram_ymax']
+                del q_dict['diagram_xmax']
+                
+                all_questions.append(q_dict)
+                
+        except Exception as e:
+            print(f"Failed on page {page_num + 1}: {str(e)}", file=sys.stderr)
+            continue
+
+    print(f"Extracted {len(all_questions)} questions. {sum(1 for q in all_questions if q.get('diagramUrl'))} have diagrams.", file=sys.stderr)
+    print(json.dumps(all_questions, indent=2))
+
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) != 3:
+        print(json.dumps({"error": "Usage: python3 extract_paper.py <qp_pdf> <ms_pdf>"}))
+        sys.exit(1)
+    
+    qp_pdf = sys.argv[1]
+    ms_pdf = sys.argv[2]
+    
+    extract(qp_pdf, ms_pdf)

@@ -68,43 +68,57 @@ export async function runIngestion(formData: FormData) {
     let inserted = 0;
     const questionsList = parsedData.questions || parsedData;
     for (const item of questionsList) {
-      // Duplicate check
-      const exists = await prisma.question.findFirst({
-        where: {
-          paperId: paper.id,
-          questionNumber: item.questionNumber
+      // Process Image
+      let finalDiagramUrl = item.diagramUrl || null;
+      if (finalDiagramUrl && finalDiagramUrl.startsWith("public")) {
+        try {
+          const { readFile, unlink } = require("fs").promises;
+          const { basename } = require("path");
+          const { put } = require("@vercel/blob");
+          
+          const fullPath = join(process.cwd(), finalDiagramUrl);
+          const imageBuffer = await readFile(fullPath);
+          const filename = basename(finalDiagramUrl);
+          
+          const blob = await put(`diagrams/${filename}`, imageBuffer, {
+            access: 'public',
+            token: process.env.BLOB_READ_WRITE_TOKEN
+          });
+
+          finalDiagramUrl = blob.url;
+          
+          // Cleanup the file
+          await unlink(fullPath).catch(() => {});
+        } catch (err) {
+          console.error("Failed to upload diagram to Vercel Blob:", err);
+          finalDiagramUrl = null;
         }
+      }
+
+      // Upsert Question
+      const existingQuestion = await prisma.question.findFirst({
+        where: { paperId: paper.id, questionNumber: item.questionNumber }
       });
 
-      if (!exists) {
-        let finalDiagramUrl = item.diagramUrl || null;
+      let questionId = "";
 
-        if (finalDiagramUrl && finalDiagramUrl.startsWith("public")) {
-          try {
-            const { readFile, unlink } = require("fs").promises;
-            const { basename } = require("path");
-            const { put } = require("@vercel/blob");
-            
-            const fullPath = join(process.cwd(), finalDiagramUrl);
-            const imageBuffer = await readFile(fullPath);
-            const filename = basename(finalDiagramUrl);
-            
-            const blob = await put(`diagrams/${filename}`, imageBuffer, {
-              access: 'public',
-              token: process.env.BLOB_READ_WRITE_TOKEN
-            });
-
-            finalDiagramUrl = blob.url;
-            
-            // Cleanup the file
-            await unlink(fullPath).catch(() => {});
-          } catch (err) {
-            console.error("Failed to upload diagram to Vercel Blob:", err);
-            finalDiagramUrl = null;
+      if (existingQuestion) {
+        await prisma.question.update({
+          where: { id: existingQuestion.id },
+          data: {
+            questionText: item.questionText,
+            questionType: item.questionType,
+            correctAnswer: item.correctAnswer || null,
+            officialSolution: item.officialSolution || null,
+            ...(finalDiagramUrl && { diagramUrl: finalDiagramUrl }) // Only update if new diagram found
           }
-        }
-
-        const question = await prisma.question.create({
+        });
+        questionId = existingQuestion.id;
+        
+        // Delete old options
+        await prisma.questionOption.deleteMany({ where: { questionId } });
+      } else {
+        const newQuestion = await prisma.question.create({
           data: {
             paperId: paper.id,
             questionNumber: item.questionNumber,
@@ -115,20 +129,21 @@ export async function runIngestion(formData: FormData) {
             diagramUrl: finalDiagramUrl,
           }
         });
-
-        if (item.options && item.options.length > 0) {
-          await Promise.all(item.options.map((opt: any, idx: number) => 
-            prisma.questionOption.create({
-              data: {
-                questionId: question.id,
-                content: opt.content,
-                isCorrect: opt.isCorrect,
-                orderIndex: idx
-              }
-            })
-          ));
-        }
+        questionId = newQuestion.id;
         inserted++;
+      }
+
+      if (item.options && item.options.length > 0) {
+        await Promise.all(item.options.map((opt: any, idx: number) => 
+          prisma.questionOption.create({
+            data: {
+              questionId,
+              content: opt.content,
+              isCorrect: opt.isCorrect,
+              orderIndex: idx
+            }
+          })
+        ));
       }
     }
 
